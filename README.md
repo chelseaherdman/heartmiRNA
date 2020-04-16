@@ -30,7 +30,7 @@ This work is divided into folders:
 * **Chelsea Herdman** [Github](https://github.com/chelseaherdman)
 * **Bradley L. Demarest** [Github](https://github.com/bdemarest)
 
-Please contact Chelsea Herdman [cherdman@genetics.utah.edu] with any questions or concerns. 
+Please contact [Chelsea Herdman](cherdman@genetics.utah.edu) with any questions or concerns. 
 
 ***
 ### References

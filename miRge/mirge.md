@@ -4,7 +4,7 @@ This document describes our usage of miRge2.0 for counting miRNAs in our small R
 
 ### Install miRge2.0 and download zebrafish libraries
 
-Download zebrafish libraries containing sequences, coordinates and indexes from [miRge2.0](https://github.com/mhalushka/miRge) to a directory named "mirge_libs".
+Download zebrafish libraries containing sequences, coordinates and indexes from [miRge2.0](https://github.com/mhalushka/miRge) to a directory named "mirge_libs_20200302".
 *Libraries used were rebuilt 05-06-2018 using miRBase22.0 according to GitHub and we downloaded them 03-02-2020*
 
 ```
@@ -17,15 +17,16 @@ Install miRge2.0 via conda following the instructions [here](https://github.com/
 
 Launch miRge alignment/quantification for 14806R small RNA fastq files, using the trimmed fastq files that are described in *FastqProcessing.md*. There are 22 samples and 2 lanes so 44 fastq files total. Create a command vector for each fastq file in R and use a cluster to run multiple commands at once. 
 
-> miRge requires unzipped fastq files.
+> miRge requires unzipped fastq files. The fastq files are available for download in the CvDC DataHub. The following code will run if the fastq files are found in a directory named "processed_fastq_unzip" one level above the working directory and the paths to mirge and bowtie are changed to user-specific paths.
 
 ```
 # Load libraries
 library(data.table)
 library(parallel)
+library(here)
 
 # Load sample info table
-fq_info = fread("../../14806R_fastq_info.txt")
+fq_info = fread(here("14806R_fastq_info.txt"))
 
 # Add file_id column, to provide a readable file-specific label.
 fq_info[, file_id:=paste(gnomex_id, flowcell_id, fastq_type, sep="_")]
@@ -41,7 +42,7 @@ command_vec = paste(
     "mkdir -p", insert_info$file_id, ";",
 
     "/opt/anaconda/anaconda2/bin/miRge2.0 annotate",
-    "   -s", file.path("../../processed_fastq_unzip", insert_info$fastq_filename),
+    "   -s", file.path("../processed_fastq_unzip", insert_info$fastq_filename),
     "   -d miRBase",
     "   -o", insert_info$file_id,
     "   -pb /usr/local/bowtie-1.1.1/",
