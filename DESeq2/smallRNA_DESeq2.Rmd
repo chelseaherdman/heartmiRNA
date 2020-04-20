@@ -1,0 +1,267 @@
+---
+title: "Differential expression analysis (DESeq2) - miRNAs"
+author: "Chelsea Herdman"
+date: "April 20th, 2020"
+output: github_document
+editor_options: 
+  chunk_output_type: inline
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+We performed differential expression analysis using DESeq2 on the 
+mirge estimated counts for small RNAS following the DESeq2 vignette found [here](http://bioconductor.org/packages/release/bioc/vignettes/DESeq2/inst/doc/DESeq2.html).
+
+### Set up the counts matrix for DESeq
+
+Load required libraries.
+
+```{r libraries, message=FALSE, error=FALSE, warning=FALSE}
+library(data.table)
+library(DESeq2)
+library(here)
+library(biomaRt)
+library(apeglm)
+library(RColorBrewer)
+library(pheatmap)
+library(fs)
+```
+
+Load sample info table and make column data dataframe.
+
+```{r sample_info}
+sample_info = fread(here("DESeq2", "smallRNA_sample_info.txt"))
+cData = data.frame(time_point=factor(sample_info$time_point,
+                                     levels=c("24hpf", "36hpf", "48hpf",
+                                              "60hpf", "72hpf")),
+                   replicate_id=factor(sample_info$replicate_id,
+                                       levels=c("rep_1", "rep_2", "rep_3", 
+                                                "rep_4", "rep_5")))
+rownames(cData) = sample_info$gnomex_id
+```
+
+Load fastq sample info table.
+```{r fastq info}
+fastq_info = fread(here("14806R_fastq_info.txt"))
+```
+
+
+Load counts table and sum counts from the two lanes.
+```{r prep_countsmatrix}
+counts_tab = fread(here("miRge", "14806R_mirge_counts_long_20200310.txt"))
+
+counts_tab = merge(counts_tab, fastq_info[, list(gnomex_id, fastq_filename)], by="fastq_filename")
+
+length(unique(counts_tab$fastq_filename))
+length(unique(counts_tab$gnomex_id))
+length(unique(counts_tab$mirge_mir_id))
+
+ctab = dcast(counts_tab, mirge_mir_id ~ gnomex_id, value.var="count", fun.aggregate = sum, fill=0L)
+
+length(unique(ctab$mirge_mir_id))
+
+setcolorder(ctab, c("mirge_mir_id", paste("14806X", 1:22, sep="")))
+
+```
+
+Prep counts matrix for DESeq2
+```{r prep_countsmatrix}
+counts = as.matrix(ctab[, !"mirge_mir_id"])
+rownames(counts) = ctab$mirge_mir_id
+storage.mode(counts) = "integer" # DESeq requires us to change numeric values to integer.
+```
+
+***
+### Diagnostics
+
+**_Read sum distributions_**
+```{r read_sum, fig.width=6, fig.height=4, error=TRUE}
+summary(rowSums(counts))
+dim(counts)
+sum(rowSums(counts) == 0)
+sum(rowSums(counts) < 10)
+hist(log10(rowSums(counts) + 1), breaks=100, col="grey80")
+abline(v=log10(1e7), col="red")
+abline(v=log10(10), col="red")
+
+# Remove genes with fewer than 10 and more than 1e7 reads total (over 22 samples)
+# (removes 18 genes)
+counts = counts[rowSums(counts) > 10, ]
+counts = counts[rowSums(counts) < 1e7, ]
+
+summary(rowSums(counts))
+dim(counts)
+```
+
+***
+
+### Run Differential Expression Analysis
+
+**_Create the DESeqDataSet_**
+
+Perform the likelihood ratio test and create a datatable of the differential expression results.
+```{r dds_diag, fig.height=4, fig.width=6}
+dds = DESeqDataSetFromMatrix(countData=counts,
+                             colData=cData,
+                             design=~ replicate_id + 
+                                      time_point)
+
+dds = estimateSizeFactors(dds)
+dds = estimateDispersions(dds)
+dds = nbinomLRT(dds, reduced=~ replicate_id)
+res = results(dds, cooksCutoff=TRUE)
+
+plotMA(res, ylim = c(-3, 3))
+plotDispEsts(dds)
+
+res = as.data.frame(res)
+res = data.frame(mirge_mir_id=rownames(res), res)
+res = data.table(res)
+setorder(res, pvalue, na.last=TRUE)
+length(unique(res$mirge_mir_id))
+sum(res$padj < 0.05, na.rm=TRUE )
+sum(is.na(res$pvalue))
+hist(res$pvalue, breaks=20, col="grey" )
+
+res05 = results(dds, alpha=0.05)
+summary(res05)
+
+resultsNames(dds)
+
+resLFC = lfcShrink(dds, coef="time_point_72hpf_vs_24hpf", type="apeglm")
+
+plotMA(resLFC, ylim=c(-2,2))
+```
+
+**_Compute Normalized Counts_**
+
+Convert matrix of normalized counts into data.table, with a gene_id column in order to incorporate into differential expression results table.
+```{r normcounts}
+norm_counts = counts(dds, normalized=TRUE)
+norm_tab = data.table(norm_counts)
+norm_tab$mirge_mir_id = rownames(norm_counts)
+```
+
+Convert from wide-form to long-form and compute mean normalized counts.
+
+```{r normcounts melt}
+norm = melt(norm_tab, id.vars="mirge_mir_id", value.name="norm_counts",
+            variable.name="gnomex_id", variable.factor=FALSE)
+
+norm = merge(x=norm, y=sample_info[, list(gnomex_id, time_point,
+                                          replicate_id)], by="gnomex_id")
+
+summary_norm = norm[,
+              list(mean_normcounts=mean(norm_counts)),
+                    by=list(mirge_mir_id,
+                            time_point)]
+```
+
+Convert summary table of mean normalized counts to wide-form and merge into
+differential expression results.
+```{r}
+sum_norm = dcast(summary_norm, mirge_mir_id ~ time_point,
+                 value.var="mean_normcounts")
+
+setcolorder(sum_norm, c("mirge_mir_id", "24hpf", "36hpf", "48hpf",
+                        "72hpf"))
+
+res_sum = merge(res, sum_norm, by = "mirge_mir_id")
+
+setorder(res_sum, pvalue, na.last=TRUE)
+```
+
+**_rlog transformation_**
+
+Perform rlog transformation, taking into account different variability of samples. 
+Extract the computed rlog values into a matrix, then convert to long form.
+```{r rlog}
+rld <- rlog(dds, blind=FALSE)
+rmat = assay(rld)
+rtab = data.table(rmat)
+rtab$mirge_mir_id = rownames(rmat)
+
+rlog_long = melt(rtab, id.vars="mirge_mir_id",
+                 variable.name="gnomex_id", value.name="rlog_value")
+
+rlog_long = merge(rlog_long, 
+                  sample_info[, list(gnomex_id, rep_time, 
+                                     replicate_id, time_point)],
+                  by="gnomex_id")
+
+```
+
+Perform principal component analysis on the rlog values.
+```{r pca_plot_rlogcounts, fig.height=4, fig.width=4}
+plotPCA(rld, intgroup=c("time_point"))
+```
+
+
+```{r, sampletosampleheatmap, fig.height=4, fig.width=6}
+vsd <- varianceStabilizingTransformation(dds, blind=FALSE)
+sampleDists <- dist(t(assay(vsd)))
+sampleDistMatrix <- as.matrix(sampleDists)
+rownames(sampleDistMatrix) <- paste(vsd$condition, vsd$type, sep="-")
+colnames(sampleDistMatrix) <- paste(vsd$replicate_id, vsd$time_point, sep="-")
+colors <- colorRampPalette( rev(brewer.pal(9, "Blues")) )(255)
+pheatmap(sampleDistMatrix,
+         clustering_distance_rows=sampleDists,
+         clustering_distance_cols=sampleDists,
+         col=colors)
+```
+
+Create long-form data.table contain vsd values, for input to DPGP clustering.
+```{r}
+vsd_mat = assay(vsd)
+vtab = as.data.table(vsd_mat, keep.rownames="mirge_mir_id")
+vtab_long = melt(vtab, id.vars="mirge_mir_id",
+                 variable.name="gnomex_id", value.name="vsd_value")
+
+vtab_long = merge(vtab_long,
+                  sample_info[, list(gnomex_id, rep_time,
+                                     replicate_id, time_point)],
+                  by="gnomex_id")
+
+```
+
+***
+
+### Create complete annotated results table
+
+```{r}
+
+#fwrite(rlog_long, here("DESeq2", "20200420_smallRNA_deseq2_rlog_results.txt.gz"))
+#fwrite(res_sum, here("DESeq2", "20200420_smallRNA_deseq2_results.txt.gz"))
+#fwrite(vtab_long, here("DESeq2", "20200420_smallRNA_deseq2_vst_results.txt.gz"))
+
+genes_to_keep_fdr = res_sum[padj < 0.05, mirge_mir_id]
+
+fdr_tab = vtab_long[mirge_mir_id %in% genes_to_keep_fdr]
+
+length(unique(fdr_tab$mirge_mir_id))
+
+```
+
+Create input files for running DPGP clustering.
+Four files containing vsd values for each replicate.
+```{r}
+# Loop to build and save to file table of vsd values for each replicate.
+# By looping over c("rep_1", "rep_2", "rep_3", "rep_4"),
+# we leave out/ignore the incomplete replicate 5 values.
+
+dir_create(here("DESeq2", "dpgp_input_files"))
+
+for (rep_i in c("rep_1", "rep_2", "rep_3", "rep_4")) {
+    tmp_tab = fdr_tab[replicate_id == rep_i]
+    tmp_wide = dcast(data=tmp_tab, formula=mirge_mir_id ~ time_point,
+                     value.var="vsd_value")
+    setnames(tmp_wide, c("gene", "24", "36", "48", "60", "72"))
+    tmp_filename = paste("DPGPCluster_vsd_", rep_i, "_fdr5pct_",
+                         length(genes_to_keep_fdr),"genes_20200218.txt", sep="")
+    fwrite(tmp_wide, file=here("DESeq2", "dpgp_input_files", tmp_filename), sep="\t")
+}
+
+```
+
